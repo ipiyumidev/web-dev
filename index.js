@@ -1,19 +1,13 @@
 const express = require('express');
 const app = express();
 
-const port = 3000;
-
-// Middleware to parse JSON
-app.use(express.json());
-
-// Hello World API endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Hello World!',
-    status: 'success',
+    status: 'ok',
+    session: 'NB6007CEM S2\''
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}/`);
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`Server running on port ${process.env.PORT || 3000}`);
 });
