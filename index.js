@@ -1,5 +1,6 @@
 const express = require('express');
 const app = express();
+app.use(express.json());
 const ProvincesRouter = require('./router/provinces')
 const DistrictRouter = require('./router/districts')
 const StationsRouter = require('./router/stations')
