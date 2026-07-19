@@ -1,6 +1,6 @@
 
 const express = require('express');
-const {seedData} = require('./db')
+const { seedData, connectToDatabase } = require('./db')
 
 
 
@@ -24,125 +24,170 @@ function resolveVehicleId(vehicleIdParam) {
 // 4. Vehicles
 // ---------------------------------------------------------
 
-// GET /vehicles (Collection)
-router.get('/', (req, res) => {
-    res.status(200).json(seedData.vehicles);
+// GET /vehicles (Collection) - MongoDB
+router.get('/', async (req, res) => {
+    try {
+        const db = await connectToDatabase();
+        const vehicles = await db.collection('vehicles').find({}).toArray();
+        res.status(200).json(vehicles);
+    } catch (error) {
+        console.error('Error fetching vehicles:', error);
+        res.status(500).json({ error: 'Failed to fetch vehicles' });
+    }
 });
 
-// GET /vehicles/:vehicleId
-router.get('/:vehicleId', (req, res) => {
-    const id = Number(req.params.vehicleId);
+// GET /vehicles/:vehicleId - MongoDB
+router.get('/:vehicleId', async (req, res) => {
+    try {
+        const id = Number(req.params.vehicleId);
+        const db = await connectToDatabase();
+        
+        const vehicle = await db.collection('vehicles').findOne({ id: id });
 
-    const vehicle = seedData.vehicles.find(v => v.id === id);
+        if (!vehicle) {
+            return res.status(404).json({ error: "Vehicle not found" });
+        }
 
-    if (!vehicle) {
-        return res.status(404).json({ error: "Vehicle not found" });
+        // Get last ping from pings collection if it exists
+        const lastPing = await db.collection('pings').findOne(
+            { vehicle_id: id },
+            { sort: { _id: -1 } }
+        );
+
+        res.status(200).json({
+            ...vehicle,
+            last_ping: lastPing || null
+        });
+    } catch (error) {
+        console.error('Error fetching vehicle:', error);
+        res.status(500).json({ error: 'Failed to fetch vehicle' });
     }
-
-    const vehiclePings = seedData.pings.filter(p => p.vehicle_id === id);
-    const lastPing = vehiclePings.length > 0
-        ? vehiclePings[vehiclePings.length - 1]
-        : null;
-
-    res.status(200).json({
-        ...vehicle,
-        last_ping: lastPing
-    });
 });
 
-// GET /vehicles/:vehicle-id/pings (Scoped collection)
-router.get('/:vehicleId/pings', (req, res) => {
-    const id = req.params.vehicleId;
-    
-    // First, verify the vehicle exists (to return 404 if it doesn't)
-    const vehicle = seedData.vehicles.find(v => v.id == id);
-    if (!vehicle) {
-        return res.status(404).json({ error: "Vehicle not found" });
-    }
+// GET /vehicles/:vehicle-id/pings (Scoped collection) - MongoDB
+router.get('/:vehicleId/pings', async (req, res) => {
+    try {
+        const id = Number(req.params.vehicleId);
+        const db = await connectToDatabase();
+        
+        // First, verify the vehicle exists (to return 404 if it doesn't)
+        const vehicle = await db.collection('vehicles').findOne({ id: id });
+        if (!vehicle) {
+            return res.status(404).json({ error: "Vehicle not found" });
+        }
 
-    // Filter pings that belong strictly to this vehicle
-    const vehiclePings = seedData.pings.filter(ping => ping.vehicle_id == id);
-    res.status(200).json(vehiclePings);
+        // Get pings that belong to this vehicle
+        const vehiclePings = await db.collection('pings').find({ vehicle_id: id }).toArray();
+        res.status(200).json(vehiclePings);
+    } catch (error) {
+        console.error('Error fetching vehicle pings:', error);
+        res.status(500).json({ error: 'Failed to fetch vehicle pings' });
+    }
 });
 
-// GET /vehicles/:vehicle-id/last-position
-router.get('/:vehicleId/last-position', (req, res) => {
-    const id = req.params.vehicleId;
+// GET /vehicles/:vehicle-id/last-position - MongoDB
+router.get('/:vehicleId/last-position', async (req, res) => {
+    try {
+        const id = Number(req.params.vehicleId);
+        const db = await connectToDatabase();
 
-    // First, verify the vehicle exists (to return 404 if it doesn't)
-    const vehicle = seedData.vehicles.find(v => v.id == id);
-    if (!vehicle) {
-        return res.status(404).json({ error: "Vehicle not found" });
+        // First, verify the vehicle exists (to return 404 if it doesn't)
+        const vehicle = await db.collection('vehicles').findOne({ id: id });
+        if (!vehicle) {
+            return res.status(404).json({ error: "Vehicle not found" });
+        }
+
+        // Get the last ping for this vehicle
+        const lastPing = await db.collection('pings').findOne(
+            { vehicle_id: id },
+            { sort: { _id: -1 } }
+        );
+        res.status(200).json(lastPing || null);
+    } catch (error) {
+        console.error('Error fetching last position:', error);
+        res.status(500).json({ error: 'Failed to fetch last position' });
     }
-
-    // Filter pings that belong strictly to this vehicle
-    const vehiclePings = seedData.pings.filter(ping => ping.vehicle_id == id);
-    res.status(200).json(vehiclePings);
 });
 
-// POST /vehicles/:vehicleId/pings (device ping ingestion, requires X-API-Key)
-router.post('/:vehicleId/pings', (req, res) => {
-    const vehicleIdParam = req.params.vehicleId;
-    const apiKey = req.get('X-API-Key');
+// POST /vehicles/:vehicleId/pings (device ping ingestion, requires X-API-Key) - MongoDB
+router.post('/:vehicleId/pings', async (req, res) => {
+    try {
+        const vehicleIdParam = req.params.vehicleId;
+        const apiKey = req.get('X-API-Key');
 
-    if (!apiKey) {
-        return res.status(401).json({ error: "X-API-Key header is required" });
+        if (!apiKey) {
+            return res.status(401).json({ error: "X-API-Key header is required" });
+        }
+
+        const numericVehicleId = resolveVehicleId(vehicleIdParam);
+        const db = await connectToDatabase();
+        const vehicle = numericVehicleId !== null
+            && await db.collection('vehicles').findOne({ id: numericVehicleId });
+
+        if (!vehicle) {
+            return res.status(404).json({ error: "Vehicle not found" });
+        }
+
+        if (deviceKeys[vehicleIdParam] !== apiKey) {
+            return res.status(403).json({ error: "API key does not match this vehicle" });
+        }
+
+        const { latitude, longitude, speed } = req.body || {};
+        if (latitude === undefined || longitude === undefined || speed === undefined) {
+            return res.status(400).json({ error: "latitude, longitude, and speed are required" });
+        }
+
+        // Get next id
+        const lastPing = await db.collection('pings').findOne({}, { sort: { id: -1 } });
+        const nextId = lastPing ? lastPing.id + 1 : 1;
+        
+        const newPing = {
+            id: nextId,
+            vehicle_id: vehicle.id,
+            latitude,
+            longitude,
+            speed_kmh: speed,
+            timestamp: new Date().toISOString()
+        };
+        
+        await db.collection('pings').insertOne(newPing);
+
+        res
+            .status(201)
+            .set('Location', `${req.baseUrl}/${vehicleIdParam}/pings/${newPing.id}`)
+            .set('ETag', `"${newPing.id}"`)
+            .set('Last-Modified', new Date(newPing.timestamp).toUTCString())
+            .json(newPing);
+    } catch (error) {
+        console.error('Error creating ping:', error);
+        res.status(500).json({ error: 'Failed to create ping' });
     }
-
-    const numericVehicleId = resolveVehicleId(vehicleIdParam);
-    const vehicle = numericVehicleId !== null
-        && seedData.vehicles.find(v => v.id === numericVehicleId);
-
-    if (!vehicle) {
-        return res.status(404).json({ error: "Vehicle not found" });
-    }
-
-    if (deviceKeys[vehicleIdParam] !== apiKey) {
-        return res.status(403).json({ error: "API key does not match this vehicle" });
-    }
-
-    const { latitude, longitude, speed } = req.body || {};
-    if (latitude === undefined || longitude === undefined || speed === undefined) {
-        return res.status(400).json({ error: "latitude, longitude, and speed are required" });
-    }
-
-    const nextId = seedData.pings.reduce((max, p) => Math.max(max, p.id), 0) + 1;
-    const newPing = {
-        id: nextId,
-        vehicle_id: vehicle.id,
-        latitude,
-        longitude,
-        speed_kmh: speed,
-        timestamp: new Date().toISOString()
-    };
-    seedData.pings.push(newPing);
-
-    res
-        .status(201)
-        .set('Location', `${req.baseUrl}/${vehicleIdParam}/pings/${newPing.id}`)
-        .set('ETag', `"${newPing.id}"`)
-        .set('Last-Modified', new Date(newPing.timestamp).toUTCString())
-        .json(newPing);
 });
 
-// GET /vehicles/:vehicleId/pings/:pingId
-router.get('/:vehicleId/pings/:pingId', (req, res) => {
-    const numericVehicleId = resolveVehicleId(req.params.vehicleId);
-    const vehicle = numericVehicleId !== null
-        && seedData.vehicles.find(v => v.id === numericVehicleId);
+// GET /vehicles/:vehicleId/pings/:pingId - MongoDB
+router.get('/:vehicleId/pings/:pingId', async (req, res) => {
+    try {
+        const numericVehicleId = resolveVehicleId(req.params.vehicleId);
+        const db = await connectToDatabase();
+        const vehicle = numericVehicleId !== null
+            && await db.collection('vehicles').findOne({ id: numericVehicleId });
 
-    if (!vehicle) {
-        return res.status(404).json({ error: "Vehicle not found" });
+        if (!vehicle) {
+            return res.status(404).json({ error: "Vehicle not found" });
+        }
+
+        const pingId = Number(req.params.pingId);
+        const ping = await db.collection('pings').findOne({ id: pingId, vehicle_id: vehicle.id });
+
+        if (!ping) {
+            return res.status(404).json({ error: "Ping not found" });
+        }
+
+        res.status(200).json(ping);
+    } catch (error) {
+        console.error('Error fetching ping:', error);
+        res.status(500).json({ error: 'Failed to fetch ping' });
     }
-
-    const pingId = Number(req.params.pingId);
-    const ping = seedData.pings.find(p => p.id === pingId && p.vehicle_id === vehicle.id);
-
-    if (!ping) {
-        return res.status(404).json({ error: "Ping not found" });
-    }
-
-    res.status(200).json(ping);
 });
 
 
